@@ -13,6 +13,12 @@ public class UDPClient : MonoBehaviour
     public int serverPort = 7777;
     public string clientName = "Player";
 
+    [Header("Conexão")]
+    [Tooltip("Intervalo entre tentativas de JOIN enquanto não conectado.")]
+    public float joinRetryInterval = 1f;
+    [Tooltip("Segundos sem receber nada do servidor para considerar a conexão perdida.")]
+    public float serverTimeout = 3f;
+
     public int PlayerId { get; private set; } = -1;
     public bool IsConnected { get; private set; }
 
@@ -21,9 +27,17 @@ public class UDPClient : MonoBehaviour
     private volatile bool running;
     private readonly ConcurrentQueue<string> incoming = new ConcurrentQueue<string>();
     private IPEndPoint serverEndpoint;
+    private float nextJoinTime;
+    private float lastReceiveTime;
 
     public event Action<NetMessage> StateReceived;
     public event Action<string> StatusChanged;
+
+    private void Awake()
+    {
+        // Sem isso, as janelas que não estão em foco PARAM de enviar/receber (testando 4 clientes no mesmo PC).
+        Application.runInBackground = true;
+    }
 
     private void Start()
     {
@@ -36,24 +50,46 @@ public class UDPClient : MonoBehaviour
 
         try
         {
-            serverEndpoint = new IPEndPoint(IPAddress.Parse(serverIP), serverPort);
-            udp = new UdpClient();
+            IPAddress address;
+            if (!IPAddress.TryParse(serverIP, out address))
+            {
+                IPAddress[] list = Dns.GetHostAddresses(serverIP);
+                address = null;
+                foreach (IPAddress a in list)
+                    if (a.AddressFamily == AddressFamily.InterNetwork) { address = a; break; }
+                if (address == null) throw new Exception("IP/host inválido: " + serverIP);
+            }
+
+            serverEndpoint = new IPEndPoint(address, serverPort);
+            udp = new UdpClient(AddressFamily.InterNetwork);
             udp.Connect(serverEndpoint);
+
+            // Windows: evita WSAECONNRESET quando o servidor ainda não está no ar.
+            try { udp.Client.IOControl((IOControlCode)(-1744830452), new byte[] { 0 }, null); }
+            catch { }
+
             running = true;
+            lastReceiveTime = Time.realtimeSinceStartup;
             receiveThread = new Thread(ReceiveLoop) { IsBackground = true };
             receiveThread.Start();
 
-            NetMessage join = new NetMessage();
-            join.type = "JOIN";
-            join.clientName = clientName;
-            Send(join);
-            StatusChanged?.Invoke("Solicitando entrada...");
+            SendJoin();
+            StatusChanged?.Invoke("Solicitando entrada em " + serverEndpoint + "...");
         }
         catch (Exception e)
         {
             StatusChanged?.Invoke("Falha de conexão: " + e.Message);
             Debug.LogError("UDPClient: " + e.Message);
         }
+    }
+
+    private void SendJoin()
+    {
+        NetMessage join = new NetMessage();
+        join.type = "JOIN";
+        join.clientName = clientName;
+        Send(join);
+        nextJoinTime = Time.realtimeSinceStartup + Mathf.Max(0.2f, joinRetryInterval);
     }
 
     private void ReceiveLoop()
@@ -74,6 +110,8 @@ public class UDPClient : MonoBehaviour
 
     private void Update()
     {
+        if (!running) return;
+
         while (incoming.TryDequeue(out string json))
         {
             NetMessage message;
@@ -81,12 +119,15 @@ public class UDPClient : MonoBehaviour
             catch { continue; }
 
             if (message == null) continue;
+            lastReceiveTime = Time.realtimeSinceStartup;
 
             if (message.type == "WELCOME")
             {
+                bool wasConnected = IsConnected;
                 PlayerId = message.playerId;
                 IsConnected = PlayerId >= 0;
-                StatusChanged?.Invoke(IsConnected ? "Conectado como P" + (PlayerId + 1) : "Não foi possível entrar");
+                if (!wasConnected)
+                    StatusChanged?.Invoke(IsConnected ? "Conectado como P" + (PlayerId + 1) : "Não foi possível entrar");
             }
             else if (message.type == "FULL")
             {
@@ -94,9 +135,24 @@ public class UDPClient : MonoBehaviour
                 StatusChanged?.Invoke("Servidor cheio (4 jogadores).");
             }
 
-            if (message.type == "STATE" || message.type == "WELCOME")
+            // Só repassa estado depois de entrar (ignora STATE antigo/atrasado).
+            if ((message.type == "STATE" && IsConnected) || message.type == "WELCOME")
                 StateReceived?.Invoke(message);
         }
+
+        float now = Time.realtimeSinceStartup;
+
+        // Servidor sumiu / reiniciou: volta para o estado "não conectado" e tenta de novo.
+        if (IsConnected && now - lastReceiveTime > serverTimeout)
+        {
+            IsConnected = false;
+            PlayerId = -1;
+            StatusChanged?.Invoke("Conexão perdida. Tentando reconectar...");
+        }
+
+        // UDP não garante entrega: repete o JOIN até receber WELCOME.
+        if (!IsConnected && now >= nextJoinTime)
+            SendJoin();
     }
 
     public void SendInput(float axis)
@@ -120,6 +176,7 @@ public class UDPClient : MonoBehaviour
     }
 
     private void OnApplicationQuit() { Disconnect(); }
+    private void OnDestroy() { Disconnect(); }
 
     public void Disconnect()
     {

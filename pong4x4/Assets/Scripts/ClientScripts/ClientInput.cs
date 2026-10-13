@@ -1,9 +1,13 @@
 using UnityEngine;
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
 
+// Funciona com o Input Manager antigo, com o Input System novo ou com "Both"
+// (Project Settings > Player > Active Input Handling). Não precisa mudar nada.
 public class ClientInput : MonoBehaviour
 {
     public UDPClient udpClient;
-    [Tooltip("Opcional: deixe vazio para usar o input conforme o ID recebido.")]
     public bool sendOnlyWhenConnected = true;
     public float sendRate = 30f;
 
@@ -24,27 +28,54 @@ public class ClientInput : MonoBehaviour
         if (timer < interval) return;
         timer = 0f;
 
-        float axis = ReadAxisForPlayer(udpClient.PlayerId);
-        udpClient.SendInput(axis);
+        // Também serve de "heartbeat": o servidor derruba quem fica sem enviar nada.
+        udpClient.SendInput(ReadAxisForPlayer(udpClient.PlayerId));
     }
 
+    // Topo (0) e baixo (2) movem na horizontal: A/D ou setas esquerda/direita.
+    // Direita (1) e esquerda (3) movem na vertical: W/S ou setas cima/baixo.
+    // Só a janela em foco recebe teclado, então não há conflito ao testar vários clientes no mesmo PC.
     private float ReadAxisForPlayer(int playerId)
     {
-        // Teclas independentes para testar quatro clientes no mesmo computador.
-        // Topo: A/D; direita: W/S; baixo: setas esquerda/direita; esquerda: setas baixo/cima.
-        // A leitura depende do ID atribuído pelo servidor.
-        if (playerId == 0)
-            return (Input.GetKey(KeyCode.D) ? 1f : 0f) - (Input.GetKey(KeyCode.A) ? 1f : 0f);
+        if (playerId < 0) return 0f;
 
-        if (playerId == 1)
-            return (Input.GetKey(KeyCode.W) ? 1f : 0f) - (Input.GetKey(KeyCode.S) ? 1f : 0f);
+        bool horizontal = playerId == 0 || playerId == 2;
+        float positive;
+        float negative;
 
-        if (playerId == 2)
-            return (Input.GetKey(KeyCode.RightArrow) ? 1f : 0f) - (Input.GetKey(KeyCode.LeftArrow) ? 1f : 0f);
+        if (horizontal)
+        {
+            positive = (KeyHeld(KeyCode.D) || KeyHeld(KeyCode.RightArrow)) ? 1f : 0f;
+            negative = (KeyHeld(KeyCode.A) || KeyHeld(KeyCode.LeftArrow)) ? 1f : 0f;
+        }
+        else
+        {
+            positive = (KeyHeld(KeyCode.W) || KeyHeld(KeyCode.UpArrow)) ? 1f : 0f;
+            negative = (KeyHeld(KeyCode.S) || KeyHeld(KeyCode.DownArrow)) ? 1f : 0f;
+        }
 
-        if (playerId == 3)
-            return (Input.GetKey(KeyCode.UpArrow) ? 1f : 0f) - (Input.GetKey(KeyCode.DownArrow) ? 1f : 0f);
+        return positive - negative;
+    }
 
-        return 0f;
+    private static bool KeyHeld(KeyCode key)
+    {
+#if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
+        Keyboard kb = Keyboard.current;
+        if (kb == null) return false;
+        switch (key)
+        {
+            case KeyCode.A: return kb.aKey.isPressed;
+            case KeyCode.D: return kb.dKey.isPressed;
+            case KeyCode.W: return kb.wKey.isPressed;
+            case KeyCode.S: return kb.sKey.isPressed;
+            case KeyCode.LeftArrow: return kb.leftArrowKey.isPressed;
+            case KeyCode.RightArrow: return kb.rightArrowKey.isPressed;
+            case KeyCode.UpArrow: return kb.upArrowKey.isPressed;
+            case KeyCode.DownArrow: return kb.downArrowKey.isPressed;
+            default: return false;
+        }
+#else
+        return Input.GetKey(key);
+#endif
     }
 }
