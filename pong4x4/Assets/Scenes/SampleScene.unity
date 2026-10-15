@@ -492,11 +492,6 @@ MonoBehaviour:
   paddlePrefab: {fileID: 0}
   statusText: {fileID: 0}
   scoreText: {fileID: 0}
-  halfWidth: 8
-  halfHeight: 5
-  paddleLength: 1.8
-  paddleThickness: 0.22
-  ballRadius: 0.18
   createArenaOnStart: 1
 --- !u!114 &1924356386
 MonoBehaviour:
